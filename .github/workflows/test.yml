@@ -1,0 +1,89 @@
+name: CI Pipeline
+
+on:
+  - push
+  - pull_request
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime:
+          - stable
+          - oldstable
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.runtime }}
+        uses: actions/setup-go@v5
+        with:
+          go: ${{ matrix.runtime }}
+          cache: false
+
+      - name: Install Go dependencies
+        if: hashFiles('go.mod') != ''
+        run: go mod download
+
+      - name: Check Go formatting and lint
+        if: hashFiles('go.mod') != ''
+        run: |
+          if ! command -v golangci-lint >/dev/null 2>&1; then
+            echo "::notice::golangci-lint is not installed; running go vet and gofmt checks"
+          fi
+          if [ "$(gofmt -l . 2>/dev/null)" != "" ]; then
+            echo "gofmt found files that need formatting"
+            exit 1
+          fi
+          go vet ./...
+          if command -v golangci-lint >/dev/null 2>&1; then
+            golangci-lint run ./...
+          fi
+
+      - name: Build Go package
+        if: hashFiles('go.mod') != ''
+        run: go build ./...
+
+      - name: Run Go tests
+        if: hashFiles('go.mod') != ''
+        run: go test ./...
+
+      - name: Write pipeline summary
+        if: always()
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          GO_SETUP_OUTCOME: ${{ steps.setup-go.outcome }}
+          GO_DOWNLOAD_OUTCOME: ${{ steps.go-download.outcome }}
+          GO_LINT_OUTCOME: ${{ steps.go-lint.outcome }}
+          GO_BUILD_OUTCOME: ${{ steps.go-build.outcome }}
+          GO_TEST_OUTCOME: ${{ steps.go-test.outcome }}
+        run: |
+          outcome() {
+            case "$1" in
+              success) printf 'Passed' ;;
+              failure) printf 'Failed' ;;
+              skipped) printf 'Skipped' ;;
+              cancelled) printf 'Cancelled' ;;
+              *) printf 'Unknown' ;;
+            esac
+          }
+          {
+            printf '## CI Pipeline Summary\n\n'
+            printf '| Step | Outcome |\n'
+            printf '|---|---|\n'
+            printf '| Checkout | %s |\n' "$(outcome "$CHECKOUT_OUTCOME")"
+            printf '| Go setup | %s |\n' "$(outcome "$GO_SETUP_OUTCOME")"
+            printf '| Go dependencies | %s |\n' "$(outcome "$GO_DOWNLOAD_OUTCOME")"
+            printf '| Go lint | %s |\n' "$(outcome "$GO_LINT_OUTCOME")"
+            printf '| Go build | %s |\n' "$(outcome "$GO_BUILD_OUTCOME")"
+            printf '| Go tests | %s |\n' "$(outcome "$GO_TEST_OUTCOME")"
+          } >> "$GITHUB_STEP_SUMMARY"
